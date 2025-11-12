@@ -39,3 +39,62 @@
 
 # debug information files
 *.dwo
+
+
+# Proteus generated files and directories
+*.bak
+*.tmp
+*.log
+*.rpt
+*.pdf
+*.hex
+*.cof
+*.elf
+*.lst
+*.map
+*.obj
+*.o
+*.lib
+*.a
+*.mcpar
+*.mcp
+*.workspace
+*.dsn
+*.pcb
+*.prj
+*.vsm
+*.ltd
+*.ldt
+*.lct
+*.lcf
+*.lcp
+*.lce
+*.lcs
+*.lcb
+*.lcg
+*.lch
+*.lci
+*.lcj
+*.lck
+*.lcl
+*.lcm
+*.lcn
+*.lco
+*.lcq
+*.lcr
+*.lcu
+*.lcv
+*.lcw
+*.lcx
+*.lcy
+*.lcz
+
+# Simulation specific files
+*.bin
+*.out
+*.dat
+*.csv
+
+# Operating System generated files
+.DS_Store
+Thumbs.db
