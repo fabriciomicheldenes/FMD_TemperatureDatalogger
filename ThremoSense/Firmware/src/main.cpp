@@ -1,0 +1,634 @@
+#include "Button.h"
+#include "LCD_Menu.h"
+#include "rtc.h"
+#include "DateTime.h"
+#include "SDCardManager.h"
+#include "ThermoparK.h"
+//#include "Ciclico.h"
+
+#include <Arduino.h>
+#include <LiquidCrystal.h>
+#include <LiquidMenu.h>
+#include <stdint.h>
+#include <HardwareSerial.h>
+#include <DS1307.h>
+#include <TimerOne.h>
+#include <avr/wdt.h>
+#include <SdFs.h>
+
+//#define DEBUG
+#undef DEBUG
+
+bool sdcardWasPresent;
+uint8_t numUnusedPins = 21;
+const int unusedPins[] = {   2,  3,  4,
+                            29, 30, 31,
+                           
+                            A0,  A1,  A2,  A3,  A4,
+                            A5,  A6,  A7,  A9, A10,
+                            A11, A12, A13, A14, A15,                        
+                         };
+
+
+const int8_t numberOfSensors = 18;
+uint8_t sensorCSPINs[numberOfSensors]{ 49, 48, 47, 46, 45,
+                                       44, 43, 42, 41, 40,
+                                       39, 38, 37, 36, 35, 
+                                       34, 33, 32};
+
+const int8_t irf01 = 22;
+const int8_t irf02 = 23;
+const int8_t triac01 = 24;
+const int8_t triac02 = 25;
+const int8_t rele = 26;
+//static uint8_t ledLogState = 6;
+
+//alias to pins 22 (irf01) and 24 (triac01)
+#define CoolerAC triac01
+#define CoolerDC irf01
+
+const int8_t sdCardWP = 27;
+const int8_t sdCardDetect = 28;
+                                    
+ThermoparK thermoparK;
+double temperature[numberOfSensors];
+
+#define OIL_TEMP_01 temperature[16]
+#define OIL_TEMP_01 temperature[16]
+#define OIL_TEMP_02 temperature[17]
+
+//Extern declared variables
+extern uint8_t logging;
+extern uint8_t loggingInterval;
+extern uint8_t actualTime;
+extern uint8_t nextLoggingTime;
+
+TemperatureLimits tl;
+uint32_t actualTempTime;
+
+extern DS1307 rtc;
+
+// SD_FAT_TYPE = 1 for FAT16/FAT32, 2 for exFAT, 3 for FAT16/FAT32 and exFAT.
+#define SD_FAT_TYPE 3
+
+#if SD_FAT_TYPE == 1
+   SdFat sd;
+   File file;
+#elif SD_FAT_TYPE == 2
+   SdExFat sd;
+   ExFile file;
+#elif SD_FAT_TYPE == 3
+   SdFs sd;
+   FsFile file;
+#else  // SD_FAT_TYPE
+#error SD_FAT_TYPE
+#endif  // SD_FAT_TYPE
+
+String SDCardFileName; //ex. 15d05m2019_15h30
+
+char* strTime = (char*)"00:00:00";
+char* strDate = (char*)"00/00/0000";
+
+extern LiquidSystem systemMenu;
+
+const byte ledPin = LED_BUILTIN;
+bool ledState = LOW;
+const byte SSR = 5;
+bool NormalOperation = true;
+float OilTemperature;
+
+void copy(char* src, char* dst, int len) {
+    for (int i = 0; i < len; i++) {
+        *dst++ = *src++;
+    }
+    dst[len+1] = '\0';
+}
+
+void SensorsLogSDCard(uint8_t numberOfSensors)
+{    
+    char fileName[17];
+    //file.close();
+
+    SDCardFileName.toCharArray(fileName, 17);
+
+    Serial.println("Abrindo arquivo arquivo...");
+    if (!file.open(fileName, FILE_WRITE)) 
+    {
+        //error("open failed");
+        Serial.println("SD File fail");
+    }
+
+    lcd.clear();
+    lcd.print("Salvando...");
+    
+    Serial.print("Salvando no arquivo: ");
+    Serial.println(SDCardFileName);
+    
+    file.print(strDate);
+    file.print(';');
+    file.print(strTime);
+    file.print(';');    
+    
+    for(int8_t i = 0; i < numberOfSensors; i++)
+    {       
+        file.print(temperature[i]);  
+        file.print(';');
+    }
+
+    file.println();
+
+    Serial.println("Fechando arquivo...");
+    file.close();
+
+    Serial.println("Salvamento OK");
+
+    delay(500);
+    Serial.println(digitalRead(53));
+}
+
+void getTemperatures(void)
+{
+    for(int8_t i = 0; i < numberOfSensors; i++)
+    {
+        temperature[i] = static_cast<double>(thermoparK.readCelcius(sensorCSPINs[i]));
+    }
+}
+
+void SensorsLogSerial()
+{    
+    for(int8_t i = 0; i < numberOfSensors; i++) {
+              
+        switch(sensorCSPINs[i]){
+            case 32:
+                Serial.print("Oleo_01: ");
+                break;
+            
+            case 33:
+                Serial.print("Oleo_02: ");
+                break;
+            
+            case 34:
+                Serial.print("TAmb: ");
+                break;
+            
+            default:
+                Serial.print("Sensor ");
+                Serial.print(i);
+                Serial.print(": ");
+        }
+        Serial.println(temperature[i]);
+    }
+    Serial.println();
+    Serial.println(digitalRead(53));
+}
+
+void updateLoggingTime()
+{
+    nextLoggingTime += loggingInterval;
+    nextLoggingTime = nextLoggingTime % 60;
+}
+
+void updateLcd()
+{
+    copy(rtc.getDateStr(FORMAT_SHORT, FORMAT_LITTLEENDIAN, '/'), strDate, 11);
+    copy(rtc.getTimeStr(FORMAT_LONG), strTime, 9);
+    systemMenu.update();
+}
+
+bool oilHeaterFail(void)
+{
+    for(int8_t i = 0; i < numberOfSensors; i++) {
+      if(temperature[i] > 140)
+        return false; //deve ser true altrado para teste de um arduino com defeito
+    }
+    return false;
+}
+
+void heaterOil(void)
+{
+    digitalWrite(SSR, HIGH);//Liga Resistencia do oleo
+    digitalWrite(CoolerAC, LOW);//Desliga ventoinha
+    digitalWrite(CoolerDC, LOW);//Desliga ventoinha
+}
+
+void coolerOil(void)
+{
+    digitalWrite(SSR, LOW);//Desliga Resistencia do oleo
+    digitalWrite(CoolerAC, HIGH);//liga ventoinha
+    digitalWrite(CoolerDC, HIGH);//liga ventoinha
+}
+
+void heatOil(void)
+{   
+    extern uint8_t ledLogState;
+    //extern uint8_t logging = digitalRead(ledLogState);
+    bool heater;
+    static bool highTemp = false;
+    static bool lowTemp = false;
+    static uint32_t maxHighTempTime = ULONG_MAX;
+    static uint32_t minLowTempTime = ULONG_MAX;
+    static uint32_t maxLowTempTime = ULONG_MAX;
+
+    logging = digitalRead(ledLogState);
+    getTemperatures();
+    OilTemperature = max(OIL_TEMP_01, OIL_TEMP_02);
+    
+    if(oilHeaterFail())
+    {
+        heater == false;
+        coolerOil();
+        NormalOperation = false;
+        Serial.print("\n\n \t\t *****Erro de leitura nos sensores de oleo*****\n\n");
+    }
+
+    if(logging)
+    {
+        if(TempFixed)
+        {
+            Serial.println("Temperatura Fixa Maxima: 140C");
+            Serial.print("Temp max: ");
+            Serial.println(OilTemperature);
+            
+            if(OilTemperature < 140)
+            {
+                heaterOil();
+            }else{
+                coolerOil();
+            }
+        }else{            
+            Serial.print("Oil temp: ");
+            Serial.print(OilTemperature);                       
+            Serial.print("   TemperatureTarget: ");
+            Serial.print(tl.temperature);
+            
+            if(tl.heater)
+            {             
+                digitalWrite(CoolerAC, LOW);//Desliga ventoinha
+                digitalWrite(CoolerDC, LOW);//Desliga ventoinha
+       
+                if(maxHighTempTime != ULONG_MAX)
+                {
+                    Serial.print("   maxHighTempTime: ");
+                    Serial.println(maxHighTempTime - actualTempTime);
+                }else{
+                  Serial.println();
+                }
+                
+                Serial.println("Aquencendo Ventoinha desligada\n");
+            
+                if(OilTemperature < tl.temperature)
+                {
+                    heaterOil();
+                }
+                                
+                if(OilTemperature >= tl.temperature)
+                {
+                    //digitalWrite(SSR, LOW); //desliga a resistencia do oleo
+                    
+                    if(!highTemp)
+                    {                     
+                        actualTempTime = getAcumulatedSecs();                                    
+                        maxHighTempTime = actualTempTime + tl.maxTime;
+    
+                        Serial.print("\nmaxTempTimeCorrigido: ");
+                        Serial.println(maxHighTempTime);
+                    }
+                    highTemp = true; 
+                    lowTemp = false; 
+                }
+            }
+
+            if(highTemp && actualTempTime >= maxHighTempTime)
+            {
+                getNewTempCondiction(&tl);
+                tl.heater = false;  
+                minLowTempTime = actualTempTime + tl.minTime;
+                maxHighTempTime = ULONG_MAX;
+            }
+            
+            if(!tl.heater)
+            {                                     
+                if(OilTemperature >= tl.temperature)
+                {   
+                    coolerOil();
+                }
+                                         
+                if(OilTemperature < tl.temperature || actualTempTime > minLowTempTime)
+                {                   
+                    if(!lowTemp)
+                    {   
+                        actualTempTime = getAcumulatedSecs();                                    
+                        maxLowTempTime = actualTempTime + tl.maxTime;
+    
+                        Serial.print("\nmaxLowTempTimeCorrigido: ");
+                        Serial.println(maxLowTempTime - actualTempTime);
+                    }else{
+                        if(maxLowTempTime != ULONG_MAX)
+                        {
+                            Serial.print("   maxLowTempTime: ");
+                            Serial.println(maxLowTempTime - actualTempTime);
+                        }else{
+                            Serial.println();
+                        }
+                    }                    
+                    highTemp = false; 
+                    lowTemp = true; 
+                }else{
+                    if(minLowTempTime != ULONG_MAX)
+                    {
+                        Serial.print("   minLowTempTime: ");
+                        Serial.println(minLowTempTime - actualTempTime);
+                    }else{
+                        Serial.println();
+                    }
+                }
+                
+                Serial.println("Resfriando Ventoinha ligada");
+                digitalWrite(CoolerAC, HIGH);//Liga ventoinha  
+                digitalWrite(CoolerDC, HIGH);//Liga ventoinha               
+            }
+           
+            if(lowTemp && actualTempTime >= maxLowTempTime)
+            {
+                if(!getNewTempCondiction(&tl))
+                {
+                    tl.heater = false;
+                }
+                maxLowTempTime = ULONG_MAX;
+                minLowTempTime = ULONG_MAX;  
+            }
+        } 
+        actualTempTime = getAcumulatedSecs();    
+    }    
+    wdt_reset();
+}
+
+void sdCardLogging()
+{
+    if(logging)
+    {
+        t = rtc.getTime();
+        actualTime = t.min;
+
+        if(actualTime == nextLoggingTime)
+        {
+            lcd.clear();
+            lcd.print("Salvando...");
+            updateLoggingTime();
+            copy(rtc.getDateStr(FORMAT_SHORT, FORMAT_LITTLEENDIAN, '/'), strDate, 11);
+            copy(rtc.getTimeStr(FORMAT_LONG), strTime, 9);
+
+            if(sdcardOK)
+            {
+                SensorsLogSDCard(numberOfSensors);
+            }
+        }
+    }
+}
+
+void serialLogging(void)
+{
+     #define LOG_TIME 1
+     static uint8_t count = 0;
+     
+    // A cada LOG_TIME interrupções envia os dados dos
+    // sensores para porta serial.
+    if(count % LOG_TIME == 0)
+    {
+        SensorsLogSerial();
+    }
+    
+    count++;
+    
+    if(count > 250)
+    {
+       count = 0;
+    }
+}
+
+void inativar()
+{
+    //Configura a saida do Rele de Estado Sólido como desligado
+    pinMode(SSR, OUTPUT);
+    digitalWrite(SSR, LOW);
+    digitalWrite(ledLogState, LOW);
+}
+
+void treatstTimer1interruption()
+{   
+    noInterrupts();  
+
+    NormalOperation = !oilHeaterFail();
+    if(!NormalOperation)
+    {
+        lcd.clear();
+        lcd.setCursor(0,0);
+        lcd.print("Erro:");
+        lcd.setCursor(0,1);
+        lcd.print("Alta Temperatura");
+        digitalWrite(SSR, LOW); //desliga a resistencia do oleo
+        digitalWrite(CoolerAC, HIGH);//Liga ventoinha  
+        digitalWrite(CoolerDC, HIGH);//Liga ventoinha  
+        logging = false;
+        inativar();
+        wdt_reset();
+        delay(2000);
+        wdt_reset();
+    }else{  
+        updateLcd();
+        heatOil();    
+        serialLogging();        
+        sdCardLogging();        
+        wdt_reset();
+    }
+    interrupts();
+}
+
+void configPins()
+{
+    //Configura os pinos não usados como saida digital em nivel alto.
+    for(uint8_t i = 0; i < numUnusedPins; ++i){
+        pinMode(unusedPins[i], OUTPUT);
+        digitalWrite(unusedPins[i], HIGH);
+        Serial.print("Não usado ");
+        Serial.print(unusedPins[i]);
+        Serial.print(":");
+        Serial.println(digitalRead(unusedPins[i]));
+    }
+
+    //Configura como entrada digital em pullup
+    pinMode(sdCardDetect, INPUT_PULLUP);
+    pinMode(sdCardWP, INPUT_PULLUP);
+
+    //Configura como saida digital em nivel baixo
+    pinMode(irf01, OUTPUT);
+    digitalWrite(irf01, LOW);
+    pinMode(irf02, OUTPUT);
+    digitalWrite(irf02, LOW);
+    pinMode(triac01, OUTPUT);
+    digitalWrite(triac01, LOW);
+    pinMode(triac02, OUTPUT);
+    digitalWrite(triac02, LOW);  
+
+    //Configura os pinos de seleção de sensores como saida em nivel alto,
+    //desativando a leitura dos mesmos.
+    for(uint8_t i = 0; i < numberOfSensors; ++i){
+        pinMode(sensorCSPINs[i], OUTPUT);
+        digitalWrite(sensorCSPINs[i], HIGH);
+        Serial.print("Pino ");
+        Serial.print(sensorCSPINs[i]);
+        Serial.print(":");
+        Serial.println(digitalRead(sensorCSPINs[i]));
+    } 
+
+    //Configura a saida para a ventoinha.
+    pinMode(CoolerAC, OUTPUT);
+    digitalWrite(CoolerAC, LOW);//Desliga ventoinha.
+    pinMode(CoolerDC, OUTPUT);
+    digitalWrite(CoolerDC, LOW);
+
+    //Configura a saida para o Rele de Estado Sólido.
+    pinMode(SSR, OUTPUT);
+    digitalWrite(SSR, LOW);
+    delay(100);
+}
+
+bool isSDCardInserted()
+{
+    return !digitalRead(sdCardDetect);
+}
+
+bool isNotSDCardInserted()
+{
+    //digitalRead(sdCardDetect) == HIGH -> SDCard not inserted
+    return digitalRead(sdCardDetect);
+}
+
+void initializeSdCard()
+{    
+    if(isNotSDCardInserted() || sdcardOK == false)
+    {
+        if(!sd.begin(SD_CONFIG)) {            
+            Serial.println("Inicializando SdCard...");
+             sdcardOK = false;
+             delay(250);
+            //sd.initErrorHalt(&Serial);
+        }else {
+            Serial.println("SdCard Configurado");
+            sdcardOK = true;       
+        }
+    }
+}
+ 
+void setup()
+{  
+    Serial.begin(115200);
+    configPins();
+    delay(200);
+     
+    //Configura o display.
+    lcd.begin(16, 2);
+    lcd.clear();
+    lcd.print("Inicializando...");
+    sdcardWasPresent = !isNotSDCardInserted();
+
+
+    SPI.begin();    
+    initRTC();
+    initMenu(); 
+    delay(2000);
+
+//    
+//    while(!digitalRead(sdCardDetect)){
+//        lcd.print("Remova o SDCard");
+//    }
+    
+//    lcd.print("Insera o SDCard");
+//    pinMode(53, OUTPUT);
+//    digitalWrite(53, HIGH);
+//    delay(500);
+//    initializeSdCard();
+//    delay(500);
+  
+    file.open("TempCicle.csv", FILE_READ);
+    file.close();
+    delay(500);
+    Serial.println(digitalRead(53));     
+        
+    lcd.clear();
+    lcd.print("Unioeste-CSC");
+        
+    Timer1.initialize(1000000); // Inicializa o Timer1 e configura para um período de 1.0 segundos
+    Timer1.attachInterrupt(treatstTimer1interruption);
+
+    //getNewTempCondiction(&tl);
+    delay(500);
+
+    wdt_enable(WDTO_8S);
+
+    if( ((MCUSR >> 3) & 1) == 1)
+    {
+        lcd.print("Wdt Rst");
+        Serial.println("\n\n***** Houve reset por estouro do watchdog *****");
+        delay(5000);
+    } 
+    interrupts();
+}
+
+void waitForSDCardInsertion()
+{
+    noInterrupts();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Inserir SDCard");
+    //Pin 28 witch is sd card present detector don't have external interrupt option :(
+    while(digitalRead(sdCardDetect));    
+    interrupts();
+}
+
+void waitForSDCardInicialization()
+{
+    noInterrupts();
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Inicializando SDCard!");
+    lcd.setCursor(0, 1);
+    lcd.print("Aguarde...");
+    
+    for(int i = 0; i < 5; ++i){
+        initializeSdCard();
+    }
+    
+    if(!sdcardOK){
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Erro no SDCard!");
+        lcd.setCursor(0, 1);
+        lcd.print("Remova o SDCard!");
+        while(isSDCardInserted());
+    }
+    
+    interrupts();
+} 
+
+void loop()
+{
+    if(isNotSDCardInserted())
+    {
+        waitForSDCardInsertion();
+        sdcardOK = false;        
+    }
+
+    if(!sdcardOK) {
+        waitForSDCardInicialization();
+    }
+
+    checkButtons(); 
+
+    if(!logging)
+    {
+        inativar();
+    }
+    
+    wdt_reset();   
+}

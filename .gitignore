@@ -40,7 +40,6 @@
 # debug information files
 *.dwo
 
-
 # Proteus generated files and directories
 *.bak
 *.tmp
@@ -98,3 +97,96 @@
 # Operating System generated files
 .DS_Store
 Thumbs.db
+
+#Platformio
+*.pio
+
+# Build artifacts
+*.o
+*.obj
+*.exe
+*.dll
+*.so
+*.a
+*.lib
+*.bin
+*.out
+*.app
+*.lo
+*.la
+*.ln
+*.ko
+*.mod
+
+# Intermediate files
+*.ilk
+*.pdb
+*.idb
+*.ipch
+*.pch
+*.sbr
+*.bsc
+*.res
+*.aps
+*.exp
+*.map
+*.ncb
+*.suo
+*.user
+*.opt
+*.stackdump
+*.tds
+*.bak
+*.orig
+*.rej
+*.log
+*.swp
+*.swo
+
+# Build directories
+build/
+bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+ARM/
+cmake-build-*/
+.vs/
+.cache/
+
+# IDE-specific files
+.idea
+*.iml 
+*.vscode 
+*.xcodeproj
+*.xcworkspace
+*.vcproj
+*.vcxproj
+*.sln
+*.filters
+*.user
+*.opensdf
+*.sdf
+*.vshost.*
+*.dsw
+*.dsp
+*.kdev4
+*.pro.user 
+*.qch 
+*.qrc_*.cpp 
+
+# Operating system generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Package manager specific files (e.g., Conan)
+conanbuildinfo.cmake
+conaninfo.txt
+conan_imports.cmake
+conan_paths.cmake
+conan_package_info.txt
+.conan/
